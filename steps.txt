@@ -138,10 +138,4 @@ fi
 
 echo
 echo "=== Deploy finished successfully ==="
-echo "Interactive exec (run separately):"
-echo "  LATEST_REVISION=\$(az containerapp show -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP --query properties.latestRevisionName -o tsv | tr -d '\\r')"
-echo "  az containerapp exec -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP --revision \"\$LATEST_REVISION\" --command /bin/sh"
-echo "  # inside container: python test_azure_blob_mi.py"
-)
 
-echo "Script subshell exited with code $? (terminal stays open)."
