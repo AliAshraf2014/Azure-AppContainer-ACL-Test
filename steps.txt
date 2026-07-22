@@ -78,10 +78,22 @@ az containerapp registry set \
   --username "$ACR_USERNAME" \
   --password "$ACR_PASSWORD"
 
-az containerapp ingress update \
+# Enable ingress if missing; otherwise just set target port.
+if az containerapp ingress show \
   --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --target-port "$CONTAINER_PORT"
+  --resource-group "$RESOURCE_GROUP" >/dev/null 2>&1; then
+  az containerapp ingress update \
+    --name "$CONTAINER_APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --target-port "$CONTAINER_PORT"
+else
+  az containerapp ingress enable \
+    --name "$CONTAINER_APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --type external \
+    --target-port "$CONTAINER_PORT" \
+    --transport auto
+fi
 
 # --- Single revision-scope update: image + env + forced new revision ---
 az containerapp update \
