@@ -41,27 +41,27 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        from test_azure_blob_mi import ACCOUNT_NAME, FILE_SYSTEM, PATH, read_acl
+        from test_azure_blob_mi import ACCOUNT_NAME, FILE_SYSTEM, PATH, read_all_acls
 
         try:
-            acl = read_acl()
+            results = read_all_acls()
+            errors = sum(1 for r in results if "error" in r)
             payload = {
-                "exitCode": 0,
+                "exitCode": 1 if errors else 0,
                 "accountName": ACCOUNT_NAME,
                 "fileSystem": FILE_SYSTEM,
-                "path": PATH,
-                "owner": acl.get("owner"),
-                "group": acl.get("group"),
-                "permissions": acl.get("permissions"),
-                "acl": acl.get("acl"),
+                "rootPath": PATH or None,
+                "fileCount": len(results),
+                "errorCount": errors,
+                "files": results,
             }
-            status = 200
+            status = 200 if not errors else 500
         except Exception as exc:
             payload = {
                 "exitCode": 1,
                 "accountName": ACCOUNT_NAME,
                 "fileSystem": FILE_SYSTEM,
-                "path": PATH,
+                "rootPath": PATH or None,
                 "error": str(exc),
             }
             status = 500
