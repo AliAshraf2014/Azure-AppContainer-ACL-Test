@@ -107,5 +107,3 @@ az containerapp exec \
   --revision d3-cnapp-intellixcore3--d20260605092216 \
   --command "/bin/sh"
 python test_azure_blob_mi.py
-
-python test_azure_blob_mi.py
