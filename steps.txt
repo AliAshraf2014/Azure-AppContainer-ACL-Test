@@ -11,14 +11,9 @@ export RESOURCE_GROUP="d3-rg-intellixcore-uksouth-0001"
 export LOCATION="uksouth"
 export ACR_NAME="d3acrintellixcoreuksouth0001"
 export ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
-export IMAGE_REPO="datalake-acl-test"
+export IMAGE_REPO="blob-mi-test"
 export CONTAINER_APP_NAME="d3-cnapp-intellixcore3"
 export CONTAINER_PORT="8080"
-
-# Optional: override path / account for ACL read (defaults in test_azure_blob_mi.py)
-# export AZURE_DATALAKE_ACCOUNT_NAME="d3stedpclientdata"
-# export AZURE_DATALAKE_FILE_SYSTEM="clientdata"
-# export AZURE_DATALAKE_PATH="folder1/file.pdf"
 
 export IMAGE_TAG="v$(date -u +%Y%m%d%H%M%S)"
 export REVISION_SUFFIX="d$(date -u +%Y%m%d%H%M%S)"
@@ -105,8 +100,7 @@ az containerapp show \
 
 
 -------------
-# Exec into container and run ACL read directly
-az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
+az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"                                                                                               
 az containerapp exec \
   --resource-group d3-rg-intellixcore-uksouth-0001 \
   --name d3-cnapp-intellixcore3 \
@@ -114,5 +108,4 @@ az containerapp exec \
   --command "/bin/sh"
 python test_azure_blob_mi.py
 
-# Or hit the HTTP smoke endpoint (returns owner/group/permissions/acl JSON)
-# curl -X POST https://<fqdn>/smoke
+python test_azure_blob_mi.py
