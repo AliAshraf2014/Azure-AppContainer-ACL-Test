@@ -1,0 +1,16 @@
+bash steps.txt
+az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
+export LATEST_REVISION=$(az containerapp show \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "properties.latestRevisionName" -o tsv)
+echo "LATEST_REVISION=$LATEST_REVISION"
+
+az containerapp exec \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --revision "$LATEST_REVISION" \
+  --command "/bin/sh"
+
+# Inside the shell:
+python test_azure_blob_mi.py

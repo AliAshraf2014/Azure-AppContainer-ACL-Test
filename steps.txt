@@ -1,28 +1,41 @@
-# Deploy datalake-acl-test to Container Apps (bash / Cloud Shell)
-# Reads ACL from read-only Data Lake container via DefaultAzureCredential / MI.
-# Run from repo root. Uses set -e so a failed step stops the script.
+#!/usr/bin/env bash
+# Deploy datalake-acl-test to Container Apps
+# Reads ACL from read-only Data Lake via DefaultAzureCredential / MI.
+#
+# Run from repo root:
+#   bash steps.txt
+#
+# Safe to paste too: whole deploy runs in a subshell, so a failure
+# will NOT close your Git Bash / Cloud Shell terminal.
+
+(
 set -euo pipefail
 
-az extension add --name containerapp --upgrade
-az login
+# Strip Windows CR from az -o tsv output (Git Bash)
+tsv() { tr -d '\r'; }
+
+az extension add --name containerapp --upgrade 2>/dev/null || true
+
+if ! az account show >/dev/null 2>&1; then
+  az login
+fi
 az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
 
-export RESOURCE_GROUP="d3-rg-intellixcore-uksouth-0001"
-export LOCATION="uksouth"
-export ACR_NAME="d3acrintellixcoreuksouth0001"
-export ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
-export IMAGE_REPO="blob-mi-test"
-export CONTAINER_APP_NAME="d3-cnapp-intellixcore3-test"
-export CONTAINER_PORT="8080"
+RESOURCE_GROUP="d3-rg-intellixcore-uksouth-0001"
+LOCATION="uksouth"
+ACR_NAME="d3acrintellixcoreuksouth0001"
+ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+IMAGE_REPO="blob-mi-test"
+CONTAINER_APP_NAME="d3-cnapp-intellixcore3-test"
+CONTAINER_PORT="8080"
 
-export IMAGE_TAG="v$(date -u +%Y%m%d%H%M%S)"
-export REVISION_SUFFIX="d$(date -u +%Y%m%d%H%M%S)"
-export FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
+IMAGE_TAG="v$(date -u +%Y%m%d%H%M%S)"
+REVISION_SUFFIX="d$(date -u +%Y%m%d%H%M%S)"
+FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
 
 echo "IMAGE_TAG=$IMAGE_TAG"
 echo "REVISION_SUFFIX=$REVISION_SUFFIX"
 echo "FULL_IMAGE=$FULL_IMAGE"
-
 
 az acr build \
   --registry "$ACR_NAME" \
@@ -31,34 +44,33 @@ az acr build \
   --file Dockerfile \
   .
 
-# Resolve digest from the tag we just built (do NOT use show-manifests — it can
-# return empty/broken OCI manifests and cause InitImagePullBackOff on legion).
-export IMAGE_DIGEST=$(az acr repository show \
+# Resolve digest from the tag we just built (do NOT use show-manifests).
+IMAGE_DIGEST=$(az acr repository show \
   --name "$ACR_NAME" \
   --image "${IMAGE_REPO}:${IMAGE_TAG}" \
-  --query "digest" -o tsv)
+  --query "digest" -o tsv | tsv)
 if [[ -z "$IMAGE_DIGEST" ]]; then
   echo "ERROR: Image ${IMAGE_REPO}:${IMAGE_TAG} not found in ACR after build."
   exit 1
 fi
-export FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPO}@${IMAGE_DIGEST}"
+FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPO}@${IMAGE_DIGEST}"
 echo "Deploying ${IMAGE_REPO}:${IMAGE_TAG} (${IMAGE_DIGEST})"
 
-export AZURE_CLIENT_ID=$(az containerapp show \
+AZURE_CLIENT_ID=$(az containerapp show \
   --name "$CONTAINER_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
-  --query "identity.userAssignedIdentities | values(@)[0].clientId" -o tsv)
+  --query "identity.userAssignedIdentities | values(@)[0].clientId" -o tsv | tsv)
 if [[ -z "$AZURE_CLIENT_ID" ]]; then
   echo "ERROR: No user-assigned identity on $CONTAINER_APP_NAME. Assign it in portal Identity first."
   exit 1
 fi
 echo "AZURE_CLIENT_ID=$AZURE_CLIENT_ID"
 
-# --- Registry + ingress (application-scope; no new revision by themselves) ---
+# --- Registry + ingress (application-scope) ---
 az acr update --name "$ACR_NAME" --admin-enabled true
 
-export ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv)
-export ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv | tsv)
+ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv | tsv)
 az containerapp registry set \
   --name "$CONTAINER_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
@@ -98,21 +110,26 @@ az containerapp show \
   --query "{fqdn:properties.configuration.ingress.fqdn,latestRevision:properties.latestRevisionName,azureClientId:properties.template.containers[0].env[?name=='AZURE_CLIENT_ID'].value | [0],deployTag:properties.template.containers[0].env[?name=='DEPLOY_TAG'].value | [0]}" \
   -o json
 
-
-# --- Optional: exec into latest revision and run ACL smoke ---
-
-az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
-export LATEST_REVISION=$(az containerapp show \
+FQDN=$(az containerapp show \
   --name "$CONTAINER_APP_NAME" \
   --resource-group "$RESOURCE_GROUP" \
-  --query "properties.latestRevisionName" -o tsv)
-echo "LATEST_REVISION=$LATEST_REVISION"
+  --query "properties.configuration.ingress.fqdn" -o tsv | tsv)
 
-az containerapp exec \
-  --name "$CONTAINER_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --revision "$LATEST_REVISION" \
-  --command "/bin/sh"
+if [[ -n "$FQDN" ]]; then
+  echo "Health: https://${FQDN}/health"
+  curl -fsS "https://${FQDN}/health" || echo "WARN: health check failed (revision may still be starting)"
+  echo
+  echo "ACL smoke: POST https://${FQDN}/smoke"
+  curl -fsS -X POST "https://${FQDN}/smoke" || echo "WARN: /smoke failed — check MI Data Lake permissions"
+  echo
+fi
 
-# Inside the shell:
-python test_azure_blob_mi.py
+echo
+echo "=== Deploy finished successfully ==="
+echo "Interactive exec (run separately):"
+echo "  LATEST_REVISION=\$(az containerapp show -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP --query properties.latestRevisionName -o tsv | tr -d '\\r')"
+echo "  az containerapp exec -n $CONTAINER_APP_NAME -g $RESOURCE_GROUP --revision \"\$LATEST_REVISION\" --command /bin/sh"
+echo "  # inside container: python test_azure_blob_mi.py"
+)
+
+echo "Script subshell exited with code $? (terminal stays open)."
