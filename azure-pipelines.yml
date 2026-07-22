@@ -1,0 +1,148 @@
+# Azure DevOps pipeline: build Data Lake ACL test image → push to ACR → deploy to Container App
+#
+# Prerequisites (Azure DevOps):
+#   1. Service connection: Y3-APP-DEV-Intellixcore (subscription Y3-APP-DEV-INTELLIXCORE)
+#   2. Pipeline variable (if different from default): resourceGroupName
+#
+# Register this file when creating the pipeline:
+#   intellixcore-services/scripts/azure-pipelines.yml
+
+trigger:
+  batch: true
+  branches:
+    include:
+      - main
+      - develop
+      - d3-dev
+  paths:
+    include:
+      - scripts/test_azure_blob_mi.py
+      - scripts/app.py
+      - scripts/Dockerfile
+      - scripts/requirements.txt
+      - scripts/azure-pipelines.yml
+
+pr: none
+
+variables:
+  azureServiceConnection: 'Y3-APP-DEV-Intellixcore'
+  containerRegistryName: 'd3acrintellixcoreuksouth0001'
+  containerRegistryUrl: 'd3acrintellixcoreuksouth0001.azurecr.io'
+  containerAppName: 'd3-cnapp-intellixcore3'
+  # Override in Pipeline > Variables if your RG name differs
+  resourceGroupName: 'd3-rg-intellixcore-uksouth-0001'
+  repositoryName: 'datalake-acl-test'
+  dockerfilePath: 'scripts/Dockerfile'
+  buildContext: 'scripts'
+  containerPort: '8080'
+
+stages:
+- stage: BuildAndPush
+  displayName: 'Build & push image to ACR'
+  jobs:
+  - job: Build
+    displayName: 'ACR build'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+        displayName: 'Checkout repository'
+
+      - task: AzureCLI@2
+        displayName: 'Build and push image (az acr build)'
+        name: buildImage
+        inputs:
+          azureSubscription: $(azureServiceConnection)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+
+            IMAGE_TAG="$(Build.BuildId)"
+            IMAGE_URI="$(containerRegistryUrl)/$(repositoryName):${IMAGE_TAG}"
+            LATEST_URI="$(containerRegistryUrl)/$(repositoryName):latest"
+
+            echo "Building image in ACR: $(containerRegistryName)"
+            echo "Tags: ${IMAGE_TAG}, latest"
+
+            az acr build \
+              --registry "$(containerRegistryName)" \
+              --image "$(repositoryName):${IMAGE_TAG}" \
+              --image "$(repositoryName):latest" \
+              --file "$(dockerfilePath)" \
+              "$(buildContext)"
+
+            echo "Image pushed: ${IMAGE_URI}"
+            echo "##vso[task.setvariable variable=containerImage;isOutput=true]${IMAGE_URI}"
+            echo "##vso[task.setvariable variable=containerImageLatest;isOutput=true]${LATEST_URI}"
+
+- stage: DeployContainerApp
+  displayName: 'Deploy image to Container App'
+  dependsOn: BuildAndPush
+  variables:
+    containerImage: $[ stageDependencies.BuildAndPush.Build.outputs['buildImage.containerImage'] ]
+  jobs:
+  - job: Deploy
+    displayName: 'Update Container App'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - task: AzureCLI@2
+        displayName: 'Configure ACR pull and update Container App'
+        inputs:
+          azureSubscription: $(azureServiceConnection)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            set -euo pipefail
+
+            echo "Deploying image: $(containerImage)"
+            echo "Container App: $(containerAppName)"
+            echo "Resource group: $(resourceGroupName)"
+
+            if [[ -z "$(containerImage)" ]]; then
+              echo "ERROR: containerImage output variable is empty."
+              exit 1
+            fi
+
+            echo "Enabling ACR admin user (for Container App registry auth)..."
+            az acr update \
+              --name "$(containerRegistryName)" \
+              --admin-enabled true
+
+            ACR_USERNAME=$(az acr credential show \
+              --name "$(containerRegistryName)" \
+              --query "username" -o tsv)
+
+            ACR_PASSWORD=$(az acr credential show \
+              --name "$(containerRegistryName)" \
+              --query "passwords[0].value" -o tsv)
+
+            echo "Configuring registry on Container App..."
+            az containerapp registry set \
+              --name "$(containerAppName)" \
+              --resource-group "$(resourceGroupName)" \
+              --server "$(containerRegistryUrl)" \
+              --username "$ACR_USERNAME" \
+              --password "$ACR_PASSWORD"
+
+            echo "Updating Container App ingress target port to $(containerPort)..."
+            az containerapp ingress update \
+              --name "$(containerAppName)" \
+              --resource-group "$(resourceGroupName)" \
+              --target-port "$(containerPort)"
+
+            echo "Updating Container App image..."
+            az containerapp update \
+              --name "$(containerAppName)" \
+              --resource-group "$(resourceGroupName)" \
+              --image "$(containerImage)" \
+              --set-env-vars \
+                PORT="$(containerPort)" \
+                LISTEN_HOST="0.0.0.0"
+
+            echo "Deployment complete."
+            echo "View logs:"
+            echo "  az containerapp logs show --name $(containerAppName) --resource-group $(resourceGroupName) --follow"
+            echo "Run ACL smoke test:"
+            echo "  curl -X POST https://<fqdn>/smoke"

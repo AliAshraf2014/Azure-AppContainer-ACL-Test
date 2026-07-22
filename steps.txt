@@ -1,0 +1,118 @@
+# Deploy datalake-acl-test to Container Apps (bash / Cloud Shell)
+# Reads ACL from read-only Data Lake container via DefaultAzureCredential / MI.
+# Run from repo root. Uses set -e so a failed step stops the script.
+set -euo pipefail
+
+az extension add --name containerapp --upgrade
+az login
+az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
+
+export RESOURCE_GROUP="d3-rg-intellixcore-uksouth-0001"
+export LOCATION="uksouth"
+export ACR_NAME="d3acrintellixcoreuksouth0001"
+export ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
+export IMAGE_REPO="datalake-acl-test"
+export CONTAINER_APP_NAME="d3-cnapp-intellixcore3"
+export CONTAINER_PORT="8080"
+
+# Optional: override path / account for ACL read (defaults in test_azure_blob_mi.py)
+# export AZURE_DATALAKE_ACCOUNT_NAME="d3stedpclientdata"
+# export AZURE_DATALAKE_FILE_SYSTEM="clientdata"
+# export AZURE_DATALAKE_PATH="folder1/file.pdf"
+
+export IMAGE_TAG="v$(date -u +%Y%m%d%H%M%S)"
+export REVISION_SUFFIX="d$(date -u +%Y%m%d%H%M%S)"
+export FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
+
+echo "IMAGE_TAG=$IMAGE_TAG"
+echo "REVISION_SUFFIX=$REVISION_SUFFIX"
+echo "FULL_IMAGE=$FULL_IMAGE"
+
+
+az acr build \
+  --registry "$ACR_NAME" \
+  --image "${IMAGE_REPO}:${IMAGE_TAG}" \
+  --image "${IMAGE_REPO}:latest" \
+  --file Dockerfile \
+  .
+
+# Resolve digest from the tag we just built (do NOT use show-manifests — it can
+# return empty/broken OCI manifests and cause InitImagePullBackOff on legion).
+export IMAGE_DIGEST=$(az acr repository show \
+  --name "$ACR_NAME" \
+  --image "${IMAGE_REPO}:${IMAGE_TAG}" \
+  --query "digest" -o tsv)
+if [[ -z "$IMAGE_DIGEST" ]]; then
+  echo "ERROR: Image ${IMAGE_REPO}:${IMAGE_TAG} not found in ACR after build."
+  exit 1
+fi
+export FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_REPO}@${IMAGE_DIGEST}"
+echo "Deploying ${IMAGE_REPO}:${IMAGE_TAG} (${IMAGE_DIGEST})"
+
+export AZURE_CLIENT_ID=$(az containerapp show \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "identity.userAssignedIdentities | values(@)[0].clientId" -o tsv)
+if [[ -z "$AZURE_CLIENT_ID" ]]; then
+  echo "ERROR: No user-assigned identity on $CONTAINER_APP_NAME. Assign it in portal Identity first."
+  exit 1
+fi
+echo "AZURE_CLIENT_ID=$AZURE_CLIENT_ID"
+
+# --- Registry + ingress (application-scope; no new revision by themselves) ---
+az acr update --name "$ACR_NAME" --admin-enabled true
+
+export ACR_USERNAME=$(az acr credential show --name "$ACR_NAME" --query username -o tsv)
+export ACR_PASSWORD=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+az containerapp registry set \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --server "$ACR_LOGIN_SERVER" \
+  --username "$ACR_USERNAME" \
+  --password "$ACR_PASSWORD"
+
+az containerapp ingress update \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --target-port "$CONTAINER_PORT"
+
+# --- Single revision-scope update: image + env + forced new revision ---
+az containerapp update \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --image "$FULL_IMAGE" \
+  --revision-suffix "$REVISION_SUFFIX" \
+  --set-env-vars \
+    "PORT=${CONTAINER_PORT}" \
+    "LISTEN_HOST=0.0.0.0" \
+    "AZURE_CLIENT_ID=${AZURE_CLIENT_ID}" \
+    "DEPLOY_TAG=${IMAGE_TAG}"
+
+echo "Waiting for new revision to provision..."
+sleep 15
+
+az containerapp revision list \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "[?properties.active].{name:name,replicas:properties.replicas,health:properties.healthState,image:properties.template.containers[0].image,suffix:properties.revisionSuffix}" \
+  -o table
+
+az containerapp show \
+  --name "$CONTAINER_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "{fqdn:properties.configuration.ingress.fqdn,latestRevision:properties.latestRevisionName,azureClientId:properties.template.containers[0].env[?name=='AZURE_CLIENT_ID'].value | [0],deployTag:properties.template.containers[0].env[?name=='DEPLOY_TAG'].value | [0]}" \
+  -o json
+
+
+-------------
+# Exec into container and run ACL read directly
+az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
+az containerapp exec \
+  --resource-group d3-rg-intellixcore-uksouth-0001 \
+  --name d3-cnapp-intellixcore3 \
+  --revision d3-cnapp-intellixcore3--d20260605092216 \
+  --command "/bin/sh"
+python test_azure_blob_mi.py
+
+# Or hit the HTTP smoke endpoint (returns owner/group/permissions/acl JSON)
+# curl -X POST https://<fqdn>/smoke
