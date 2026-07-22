@@ -12,7 +12,7 @@ export LOCATION="uksouth"
 export ACR_NAME="d3acrintellixcoreuksouth0001"
 export ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
 export IMAGE_REPO="blob-mi-test"
-export CONTAINER_APP_NAME="d3-cnapp-intellixcore3"
+export CONTAINER_APP_NAME="d3-cnapp-intellixcore3-test"
 export CONTAINER_PORT="8080"
 
 export IMAGE_TAG="v$(date -u +%Y%m%d%H%M%S)"
