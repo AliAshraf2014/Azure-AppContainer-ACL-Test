@@ -7,7 +7,7 @@
 #
 # Safe to paste too: whole deploy runs in a subshell, so a failure
 # will NOT close your Git Bash / Cloud Shell terminal.
-
+# create d3-cnapp-intellixcore3-test and mid = mapping agent 
 (
 set -euo pipefail
 
