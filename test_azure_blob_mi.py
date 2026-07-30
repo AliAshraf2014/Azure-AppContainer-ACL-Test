@@ -68,7 +68,7 @@ def read_all_acls(
             continue
 
         try:
-            acl = fs.get_file_client(path_name).get_access_control()
+            acl = fs.get_file_client(path_name).get_access_control(upn=True)
             row = {
                 "path": path_name,
                 **parsed,
@@ -104,6 +104,7 @@ def main() -> int:
     print(
         "Filter: {clientName} : {pmsId}/Portal/{serviceLabel} : {serviceId}/Documents/{filename}"
     )
+    print("ACL: get_access_control(upn=True)")
     try:
         results = read_all_acls()
     except Exception as exc:
