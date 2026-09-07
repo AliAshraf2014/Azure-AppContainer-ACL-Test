@@ -1,15 +1,15 @@
 bash steps.txt
 
-az account set --subscription "b68899fa-2ea6-4081-b7aa-41e8cbb6f9ad"
+az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
 export LATEST_REVISION=$(az containerapp show \
-  --name s3-cnapp-intellixcore3-test \
-  --resource-group s3-rg-intellixcore-uksouth-0001 \
+  --name d3-cnapp-intellixcore3-test \
+  --resource-group d3-rg-intellixcore-uksouth-0001 \
   --query "properties.latestRevisionName" -o tsv)
 echo "LATEST_REVISION=$LATEST_REVISION"
 
 az containerapp exec \
-  --name s3-cnapp-intellixcore3-test \
-  --resource-group s3-rg-intellixcore-uksouth-0001 \
+  --name d3-cnapp-intellixcore3-test \
+  --resource-group d3-rg-intellixcore-uksouth-0001 \
   --revision "$LATEST_REVISION" \
   --command "/bin/sh"
 
