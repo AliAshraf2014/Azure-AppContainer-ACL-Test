@@ -7,7 +7,7 @@
 #
 # Safe to paste too: whole deploy runs in a subshell, so a failure
 # will NOT close your Git Bash / Cloud Shell terminal.
-# create d3-cnapp-intellixcore3-test and mid = mapping agent 
+# Target: s3-cnapp-intellixcore3-test (UAMI must already be assigned)
 (
 set -euo pipefail
 
@@ -19,14 +19,14 @@ az extension add --name containerapp --upgrade 2>/dev/null || true
 if ! az account show >/dev/null 2>&1; then
   az login
 fi
-az account set --subscription "9ef9429c-2d30-4ac3-b13f-ade020bf9f87"
+az account set --subscription "b68899fa-2ea6-4081-b7aa-41e8cbb6f9ad"
 
-RESOURCE_GROUP="d3-rg-intellixcore-uksouth-0001"
+RESOURCE_GROUP="s3-rg-intellixcore-uksouth-0001"
 LOCATION="uksouth"
-ACR_NAME="d3acrintellixcoreuksouth0001"
+ACR_NAME="s3acrintellixcoreuksouth0001"
 ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
 IMAGE_REPO="blob-mi-test"
-CONTAINER_APP_NAME="d3-cnapp-intellixcore3-test"
+CONTAINER_APP_NAME="s3-cnapp-intellixcore3-test"
 CONTAINER_PORT="8080"
 
 IMAGE_TAG="v$(date -u +%Y%m%d%H%M%S)"
