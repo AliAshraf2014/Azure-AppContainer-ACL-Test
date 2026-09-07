@@ -41,27 +41,40 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        from test_azure_blob_mi import ACCOUNT_NAME, FILE_SYSTEM, PATH, read_all_acls
+        from test_azure_blob_mi import (
+            DOWNLOAD_ACCOUNT_NAME,
+            DOWNLOAD_CONTAINER_NAME,
+            MANAGED_IDENTITY_CLIENT_ID,
+            UPLOAD_ACCOUNT_NAME,
+            UPLOAD_BLOB_PATH,
+            UPLOAD_CONTAINER_NAME,
+            run_smoke,
+        )
 
         try:
-            results = read_all_acls()
-            errors = sum(1 for r in results if "error" in r)
+            results = run_smoke()
+            errors = sum(1 for r in results if not r.get("ok"))
             payload = {
                 "exitCode": 1 if errors else 0,
-                "accountName": ACCOUNT_NAME,
-                "fileSystem": FILE_SYSTEM,
-                "rootPath": PATH or None,
-                "fileCount": len(results),
+                "managedIdentityClientId": MANAGED_IDENTITY_CLIENT_ID,
+                "uploadAccountName": UPLOAD_ACCOUNT_NAME,
+                "uploadContainerName": UPLOAD_CONTAINER_NAME,
+                "uploadBlobPath": UPLOAD_BLOB_PATH,
+                "downloadAccountName": DOWNLOAD_ACCOUNT_NAME,
+                "downloadContainerName": DOWNLOAD_CONTAINER_NAME,
+                "checkCount": len(results),
                 "errorCount": errors,
-                "files": results,
+                "checks": results,
             }
             status = 200 if not errors else 500
         except Exception as exc:
             payload = {
                 "exitCode": 1,
-                "accountName": ACCOUNT_NAME,
-                "fileSystem": FILE_SYSTEM,
-                "rootPath": PATH or None,
+                "managedIdentityClientId": MANAGED_IDENTITY_CLIENT_ID,
+                "uploadAccountName": UPLOAD_ACCOUNT_NAME,
+                "uploadContainerName": UPLOAD_CONTAINER_NAME,
+                "downloadAccountName": DOWNLOAD_ACCOUNT_NAME,
+                "downloadContainerName": DOWNLOAD_CONTAINER_NAME,
                 "error": str(exc),
             }
             status = 500
