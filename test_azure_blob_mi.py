@@ -11,20 +11,20 @@ from azure.identity import ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient
 
 # User-assigned managed identity (mapping agent)
-MANAGED_IDENTITY_CLIENT_ID = "0ff70cda-3e59-494b-914a-146bfeceab9f"
+MANAGED_IDENTITY_CLIENT_ID = "ec09a650-91b9-4af5-8868-7098384ac2ac"
 
-# Upload (player) — look for a known mapping-agent output blob
-UPLOAD_ACCOUNT_NAME = "s3stapplayeruks001"
+# Upload (player) — look for a known mapping-agent output blob (d3 / develop)
+UPLOAD_ACCOUNT_NAME = "d3stapplayeruks001"
 UPLOAD_CONTAINER_NAME = "intellixcore-mappingagent"
 UPLOAD_BLOB_PATH = (
     "TB/20260907092846/"
     "testClientA-2883119-Client 2 - Client 2 - TB from client_trial_balance.json"
 )
 
-# Download (EDP client data) — verify read access
-DOWNLOAD_ACCOUNT_NAME = "s3stedpclientdata"
+# Download (EDP client data) — verify read access (d3 / develop)
+DOWNLOAD_ACCOUNT_NAME = "d3stedpclientdata"
 DOWNLOAD_CONTAINER_NAME = "clientdata"
-DOWNLOAD_ACCOUNT_URL = "https://s3stedpclientdata.blob.core.windows.net"
+DOWNLOAD_ACCOUNT_URL = "https://d3stedpclientdata.blob.core.windows.net"
 
 # Fail fast instead of hanging on private-endpoint / ACL list stalls
 CONNECTION_TIMEOUT = 15
