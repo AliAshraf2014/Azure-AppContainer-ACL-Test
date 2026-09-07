@@ -1,163 +1,155 @@
 #!/usr/bin/env python3
-# Recursively read ACL for every file on the read-only Data Lake (UPN form).
-# Also resolve known Entra group IDs to user members via Microsoft Graph.
+# Smoke-test managed-identity access to upload + download storage.
 
 from __future__ import annotations
 
-# import os
 import sys
 
-import requests
 from azure.identity import DefaultAzureCredential
-# from azure.storage.filedatalake import DataLakeServiceClient
+from azure.storage.blob import BlobServiceClient
 
-# Read-only source (d3 EDP client data) - override via env if needed
-# ACCOUNT_NAME = os.environ.get("AZURE_DATALAKE_ACCOUNT_NAME", "d3stedpclientdata")
-# FILE_SYSTEM = os.environ.get("AZURE_DATALAKE_FILE_SYSTEM", "clientdata")
-# Optional root prefix to walk from (empty = entire container)
-# PATH = os.environ.get("AZURE_DATALAKE_PATH", "").strip()
+# User-assigned managed identity (mapping agent)
+MANAGED_IDENTITY_CLIENT_ID = "0ff70cda-3e59-494b-914a-146bfeceab9f"
 
-# Group object IDs that appear in ACLs
-GROUP_IDS = [
-    "b88db9f9-e035-4572-9f64-1eb136a85a88",
-    "df594b8f-eb27-4cdd-99a6-3c4a09bb13e5",
-]
+# Upload (player) — look for a known mapping-agent output blob
+UPLOAD_ACCOUNT_NAME = "s3stapplayeruks001"
+UPLOAD_CONTAINER_NAME = "intellixcore-mappingagent"
+UPLOAD_BLOB_PATH = (
+    "TB/20260907092846/"
+    "testClientA-2883119-Client 2 - Client 2 - TB from client_trial_balance.json"
+)
 
-GRAPH_SCOPE = "https://graph.microsoft.com/.default"
-GRAPH_BASE = "https://graph.microsoft.com/v1.0"
-
-
-# def _service_client(account_name: str) -> DataLakeServiceClient:
-#     return DataLakeServiceClient(
-#         account_url=f"https://{account_name}.dfs.core.windows.net",
-#         credential=DefaultAzureCredential(),
-#     )
+# Download (EDP client data) — verify read access
+DOWNLOAD_ACCOUNT_NAME = "s3stedpclientdata"
+DOWNLOAD_CONTAINER_NAME = "clientdata"
+DOWNLOAD_ACCOUNT_URL = "https://s3stedpclientdata.blob.core.windows.net"
 
 
-def _graph_headers() -> dict[str, str]:
-    token = DefaultAzureCredential().get_token(GRAPH_SCOPE)
-    return {"Authorization": f"Bearer {token.token}"}
-
-
-def get_group_user_members(group_id: str) -> list[dict]:
-    """Return user members of a group (users only; includes nested group users).
-
-    Uses Graph transitiveMembers cast to microsoft.graph.user so nested
-    security groups are expanded and non-user members are excluded.
-    Requires GroupMember.Read.All or Directory.Read.All.
-    """
-    url = (
-        f"{GRAPH_BASE}/groups/{group_id}/transitiveMembers/microsoft.graph.user"
-        f"?$select=id,displayName,userPrincipalName,mail"
+def _credential() -> DefaultAzureCredential:
+    return DefaultAzureCredential(
+        managed_identity_client_id=MANAGED_IDENTITY_CLIENT_ID,
     )
-    headers = _graph_headers()
-    members: list[dict] = []
-
-    while url:
-        resp = requests.get(url, headers=headers, timeout=60)
-        resp.raise_for_status()
-        payload = resp.json()
-        for item in payload.get("value", []):
-            members.append(
-                {
-                    "id": item.get("id"),
-                    "displayName": item.get("displayName"),
-                    "userPrincipalName": item.get("userPrincipalName"),
-                    "mail": item.get("mail"),
-                }
-            )
-        url = payload.get("@odata.nextLink")
-
-    return members
 
 
-def resolve_group_members(group_ids: list[str] | None = None) -> dict[str, list[dict]]:
-    """Fetch user-only members for each group ID."""
-    ids = group_ids or GROUP_IDS
-    by_group: dict[str, list[dict]] = {}
-
-    for group_id in ids:
-        print(f"\n=== Group {group_id} (users only) ===")
-        try:
-            members = get_group_user_members(group_id)
-            by_group[group_id] = members
-            print(f"User members: {len(members)}")
-            for m in members:
-                upn = m.get("userPrincipalName") or m.get("mail") or "(no UPN)"
-                name = m.get("displayName") or "(no name)"
-                print(f"  - {name} <{upn}>  [{m.get('id')}]")
-        except Exception as exc:
-            by_group[group_id] = []
-            print(f"ERROR resolving group {group_id}: {exc}", file=sys.stderr)
-
-    return by_group
+def _blob_service(account_name: str, account_url: str | None = None) -> BlobServiceClient:
+    url = (account_url or f"https://{account_name}.blob.core.windows.net").rstrip("/")
+    return BlobServiceClient(account_url=url, credential=_credential())
 
 
-# def read_all_acls(
-#     account_name: str | None = None,
-#     file_system: str | None = None,
-#     root_path: str | None = None,
-# ) -> list[dict]:
-#     """Walk folders and return ACL (with UPN) for every file."""
-#     account = (account_name or ACCOUNT_NAME).strip()
-#     fs_name = (file_system or FILE_SYSTEM).strip()
-#     root = (root_path if root_path is not None else PATH).strip().strip("/")
-#
-#     fs = _service_client(account).get_file_system_client(fs_name)
-#     results: list[dict] = []
-#
-#     for entry in fs.get_paths(path=root or None, recursive=True):
-#         if entry.is_directory:
-#             continue
-#
-#         path_name = entry.name
-#         try:
-#             acl = fs.get_file_client(path_name).get_access_control(upn=True)
-#             row = {
-#                 "path": path_name,
-#                 "owner": acl.get("owner"),
-#                 "group": acl.get("group"),
-#                 "permissions": acl.get("permissions"),
-#                 "acl": acl.get("acl"),
-#             }
-#             results.append(row)
-#             print(f"--- {path_name} ---")
-#             print("Owner:", acl["owner"])
-#             print("Group:", acl["group"])
-#             print("Permissions:", acl["permissions"])
-#             print("ACL:", acl["acl"])
-#         except Exception as exc:
-#             results.append({"path": path_name, "error": str(exc)})
-#             print(f"--- {path_name} ---", file=sys.stderr)
-#             print(f"ERROR: {exc}", file=sys.stderr)
-#
-#     print(f"\nFiles scanned: {len(results)}")
-#     return results
+def check_upload_blob(
+    account_name: str | None = None,
+    container_name: str | None = None,
+    blob_path: str | None = None,
+) -> dict:
+    """Look for the known file in the upload container."""
+    account = (account_name or UPLOAD_ACCOUNT_NAME).strip()
+    container = (container_name or UPLOAD_CONTAINER_NAME).strip()
+    path = (blob_path or UPLOAD_BLOB_PATH).strip()
+
+    print(f"\n=== Upload container check ===")
+    print(f"Account:   {account}")
+    print(f"Container: {container}")
+    print(f"Blob:      {path}")
+
+    client = _blob_service(account).get_blob_client(container=container, blob=path)
+    try:
+        props = client.get_blob_properties()
+        row = {
+            "ok": True,
+            "account": account,
+            "container": container,
+            "blobPath": path,
+            "exists": True,
+            "size": props.size,
+            "contentType": props.content_settings.content_type,
+            "lastModified": props.last_modified.isoformat() if props.last_modified else None,
+        }
+        print(f"FOUND size={props.size} contentType={props.content_settings.content_type}")
+        print(f"lastModified={row['lastModified']}")
+        return row
+    except Exception as exc:
+        row = {
+            "ok": False,
+            "account": account,
+            "container": container,
+            "blobPath": path,
+            "exists": False,
+            "error": str(exc),
+        }
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return row
+
+
+def check_download_read_access(
+    account_name: str | None = None,
+    container_name: str | None = None,
+    account_url: str | None = None,
+) -> dict:
+    """Verify the identity can read from the download container."""
+    account = (account_name or DOWNLOAD_ACCOUNT_NAME).strip()
+    container = (container_name or DOWNLOAD_CONTAINER_NAME).strip()
+    url = (account_url or DOWNLOAD_ACCOUNT_URL).strip()
+
+    print(f"\n=== Download container read-access check ===")
+    print(f"Account:   {account}")
+    print(f"Container: {container}")
+    print(f"URL:       {url}")
+
+    try:
+        cc = _blob_service(account, url).get_container_client(container)
+        # Container properties + a short list prove list/read permission.
+        props = cc.get_container_properties()
+        sample: list[str] = []
+        for i, blob in enumerate(cc.list_blobs()):
+            sample.append(blob.name)
+            if i >= 4:
+                break
+
+        row = {
+            "ok": True,
+            "account": account,
+            "container": container,
+            "accountUrl": url,
+            "canRead": True,
+            "lastModified": props.last_modified.isoformat() if props.last_modified else None,
+            "sampleBlobs": sample,
+            "sampleCount": len(sample),
+        }
+        print(f"READ OK lastModified={row['lastModified']}")
+        print(f"Sample blobs ({len(sample)}):")
+        for name in sample:
+            print(f"  - {name}")
+        return row
+    except Exception as exc:
+        row = {
+            "ok": False,
+            "account": account,
+            "container": container,
+            "accountUrl": url,
+            "canRead": False,
+            "error": str(exc),
+        }
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return row
+
+
+def run_smoke() -> list[dict]:
+    """Run upload blob + download read checks; return result rows."""
+    return [
+        check_upload_blob(),
+        check_download_read_access(),
+    ]
 
 
 def main() -> int:
-    # print(f"Account: {ACCOUNT_NAME}")
-    # print(f"File system: {FILE_SYSTEM}")
-    # print(f"Root path: {PATH or '(container root)'}")
-    # print("Filter: none (all files)")
-    # print("ACL: get_access_control(upn=True)")
+    print(f"Managed identity client ID: {MANAGED_IDENTITY_CLIENT_ID}")
+    print(f"Upload:   {UPLOAD_ACCOUNT_NAME}/{UPLOAD_CONTAINER_NAME}")
+    print(f"Download: {DOWNLOAD_ACCOUNT_NAME}/{DOWNLOAD_CONTAINER_NAME}")
 
-    # Resolve known ACL group IDs to user members via Graph
-    print("Resolving ACL group members (users only) via Microsoft Graph...")
-    group_members = resolve_group_members()
-    for gid, members in group_members.items():
-        print(f"Group {gid}: {len(members)} user(s)")
-
-    # try:
-    #     results = read_all_acls()
-    # except Exception as exc:
-    #     print(f"ERROR: {exc}", file=sys.stderr)
-    #     return 1
-    #
-    # errors = sum(1 for r in results if "error" in r)
-    # print(f"Done. Files: {len(results)}, errors: {errors}")
-    # return 1 if errors else 0
-    return 0
+    results = run_smoke()
+    errors = sum(1 for r in results if not r.get("ok"))
+    print(f"\nDone. Checks: {len(results)}, errors: {errors}")
+    return 1 if errors else 0
 
 
 if __name__ == "__main__":
