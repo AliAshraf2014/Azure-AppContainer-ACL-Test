@@ -17,8 +17,8 @@ MANAGED_IDENTITY_CLIENT_ID = "0ff70cda-3e59-494b-914a-146bfeceab9f"
 UPLOAD_ACCOUNT_NAME = "s3stapplayeruks001"
 UPLOAD_CONTAINER_NAME = "intellixcore-mappingagent"
 UPLOAD_BLOB_PATH = (
-    "TB/20260907092846/"
-    "testClientA-2883119-Client 2 - Client 2 - TB from client_trial_balance.json"
+    "TB/20260908085934/"
+    "testClientA-1461933-Performance TB - 1000 rows (Tier 3 only)_trial_balance.json"
 )
 
 # Download (EDP client data) — verify read access
