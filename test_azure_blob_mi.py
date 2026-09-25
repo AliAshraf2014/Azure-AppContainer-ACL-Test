@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 
 from azure.core.exceptions import HttpResponseError, ServiceRequestError
@@ -241,6 +242,98 @@ def check_download_read_access(
         return row
 
 
+DATA_EXTENSIONS = (".csv", ".xlsx", ".xls")
+
+
+def find_data_blobs(
+    account_name: str | None = None,
+    container_name: str | None = None,
+    account_url: str | None = None,
+    extensions: tuple[str, ...] = DATA_EXTENSIONS,
+    want: int = 5,
+    scan_limit: int = 20000,
+) -> list[str]:
+    """Names of the first readable spreadsheet/CSV blobs in the container.
+
+    Zero-byte entries are ADLS directory placeholders, so they are skipped.
+    """
+    account = (account_name or DOWNLOAD_ACCOUNT_NAME).strip()
+    container = (container_name or DOWNLOAD_CONTAINER_NAME).strip()
+    url = (account_url or DOWNLOAD_ACCOUNT_URL).strip()
+
+    _log("\n=== Looking for a data file ===")
+    _log(f"Extensions: {', '.join(extensions)} (scanning up to {scan_limit} entries)")
+
+    cc = _blob_service(account, url).get_container_client(container)
+    found: list[str] = []
+    scanned = 0
+    for blob in cc.list_blobs():
+        scanned += 1
+        if blob.name.lower().endswith(extensions) and (getattr(blob, "size", 0) or 0) > 0:
+            found.append(blob.name)
+            _log(f"  {blob.size:>10}  {blob.name}")
+            if len(found) >= want:
+                break
+        if scanned >= scan_limit:
+            break
+
+    if not found:
+        _log(f"No {'/'.join(extensions)} files in {scanned} entries.")
+    return found
+
+
+def _loose(name: str) -> str:
+    """Key for comparing blob names typed by hand against real ones.
+
+    Collapses runs of whitespace (these paths carry double spaces before the
+    colon), normalises non-breaking spaces, and ignores case — the three ways
+    a copied path stops matching what is actually stored.
+    """
+    return re.sub(r"\s+", " ", name.replace(" ", " ")).strip().lower()
+
+
+def resolve_blob_name(
+    wanted: str,
+    account_name: str | None = None,
+    container_name: str | None = None,
+    account_url: str | None = None,
+    scan_limit: int = 20000,
+) -> str | None:
+    """Find the stored name matching *wanted*, ignoring spacing and case.
+
+    Returns the exact name to hand to the blob client, or None.
+    """
+    account = (account_name or DOWNLOAD_ACCOUNT_NAME).strip()
+    container = (container_name or DOWNLOAD_CONTAINER_NAME).strip()
+    url = (account_url or DOWNLOAD_ACCOUNT_URL).strip()
+
+    target = _loose(wanted)
+    tail = target.rsplit("/", 1)[-1]
+
+    _log(f"Resolving name by listing (up to {scan_limit} entries)...")
+    cc = _blob_service(account, url).get_container_client(container)
+
+    fallback = None
+    scanned = 0
+    for blob in cc.list_blobs():
+        scanned += 1
+        loose = _loose(blob.name)
+        if loose == target:
+            _log(f"Exact match after {scanned} entries: {blob.name!r}")
+            return blob.name
+        # Same file name in a different folder — reported, not used silently.
+        if fallback is None and loose.rsplit("/", 1)[-1] == tail:
+            fallback = blob.name
+        if scanned >= scan_limit:
+            break
+
+    if fallback:
+        _log(f"No path match in {scanned} entries, but the file name exists at: {fallback!r}")
+        return fallback
+    _log(f"No match in {scanned} entries.")
+    return None
+
+
 def check_download_blob(
     blob_path: str,
     account_name: str | None = None,
@@ -264,10 +357,26 @@ def check_download_blob(
     _log(f"Container: {container}")
     _log(f"Blob:      {path}")
 
-    client = _blob_service(account, url).get_blob_client(container=container, blob=path)
+    _log(f"Requested (repr): {path!r}")
+
+    service = _blob_service(account, url)
+    client = service.get_blob_client(container=container, blob=path)
     try:
         _log("Getting blob properties...")
-        props = client.get_blob_properties()
+        try:
+            props = client.get_blob_properties()
+        except HttpResponseError as exc:
+            # 404 here means the name does not match byte for byte — a 403
+            # would mean denied. Resolve the real name and retry once.
+            if getattr(exc, "status_code", None) != 404:
+                raise
+            _log("Not found under that exact name — the stored name may differ.")
+            resolved = resolve_blob_name(path, account, container, url)
+            if not resolved:
+                raise
+            path = resolved
+            client = service.get_blob_client(container=container, blob=path)
+            props = client.get_blob_properties()
         _log(f"FOUND size={props.size} contentType={props.content_settings.content_type}")
 
         length = min(PREVIEW_BYTES, props.size or 0)
@@ -316,6 +425,7 @@ def run_smoke(
     upload: bool = True,
     download: bool = True,
     download_blob: str | None = None,
+    open_any: bool = False,
     limit: int = 10,
     words: int = PREVIEW_WORDS,
 ) -> list[dict]:
@@ -325,6 +435,12 @@ def run_smoke(
         results.append(check_upload_blob())
     if download:
         results.append(check_download_read_access(limit=limit))
+    if open_any:
+        candidates = find_data_blobs()
+        if candidates:
+            results.append(check_download_blob(candidates[0], word_count=words))
+        else:
+            results.append({"ok": False, "error": "no csv/xlsx file found"})
     if download_blob:
         results.append(check_download_blob(download_blob, word_count=words))
     return results
@@ -353,6 +469,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--any",
+        dest="open_any",
+        action="store_true",
+        help="Find the first .csv/.xlsx/.xls in the container and read it",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=10,
@@ -366,19 +488,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.upload and not args.download and not args.download_blob:
-        parser.error("specify --upload, --download and/or --download-blob PATH")
+    if not args.upload and not args.download and not args.download_blob and not args.open_any:
+        parser.error("specify --upload, --download, --any and/or --download-blob PATH")
 
     _log(f"Managed identity client ID: {MANAGED_IDENTITY_CLIENT_ID}")
     if args.upload:
         _log(f"Upload:   {UPLOAD_ACCOUNT_NAME}/{UPLOAD_CONTAINER_NAME}")
-    if args.download or args.download_blob:
+    if args.download or args.download_blob or args.open_any:
         _log(f"Download: {DOWNLOAD_ACCOUNT_NAME}/{DOWNLOAD_CONTAINER_NAME}")
 
     results = run_smoke(
         upload=args.upload,
         download=args.download,
         download_blob=args.download_blob,
+        open_any=args.open_any,
         limit=args.limit,
         words=args.words,
     )
